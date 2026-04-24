@@ -1,0 +1,2 @@
+Latest server build: minecraft-server-20260424-155357.zip
+Download from builds/minecraft-server-20260424-155357.zip
