@@ -1,0 +1,130 @@
+name: Build Minecraft Paper Server
+
+on:
+  workflow_dispatch:  # Manual trigger only
+
+jobs:
+  build-server:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # Required to push back to repository
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch all history for proper push
+      
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+      
+      - name: Download Paper 1.21.5
+        run: |
+          mkdir server
+          cd server
+          # Download the latest Paper 1.21.5 build
+          curl -o paper.jar https://api.papermc.io/v2/projects/paper/versions/1.21.5/builds/latest/downloads/paper-1.21.5-latest.jar
+      
+      - name: Create eula.txt
+        run: echo "eula=true" > server/eula.txt
+      
+      - name: Download Slimefun plugin
+        run: |
+          mkdir -p server/plugins
+          cd server/plugins
+          # Download latest Slimefun build
+          curl -L -o Slimefun.jar https://github.com/Slimefun/Slimefun4/releases/latest/download/Slimefun-Dev.jar
+      
+      - name: Create server.properties
+        run: |
+          cat > server/server.properties << 'EOF'
+          server-port=25565
+          online-mode=false
+          max-players=20
+          level-name=world
+          view-distance=10
+          simulation-distance=10
+          EOF
+      
+      - name: Run Minecraft server to generate world
+        run: |
+          cd server
+          # Run server with a timeout to generate world and stop
+          timeout 180s java -Xmx2G -jar paper.jar nogui || true
+          
+          # Wait for server to fully initialize
+          sleep 20
+          
+          # Try to gracefully stop if still running
+          echo stop | java -Xmx2G -jar paper.jar nogui || true
+          
+          # Additional wait for world save
+          sleep 10
+      
+      - name: Clean up temporary files
+        run: |
+          cd server
+          # Remove logs and unnecessary files
+          rm -rf logs/
+          rm -f *.log
+          rm -f usercache.json
+          rm -f banned-ips.json
+          rm -f banned-players.json
+          # Remove the jar to save space (user can download their own)
+          rm -f paper.jar
+      
+      - name: Create zip archive
+        run: |
+          ZIP_NAME="minecraft-server-$(date +'%Y%m%d-%H%M%S').zip"
+          echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
+          zip -r "$ZIP_NAME" server/
+      
+      - name: Configure git
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+      
+      - name: Push zip to repository
+        run: |
+          # Create a branch for server builds (optional)
+          BRANCH_NAME="server-builds"
+          
+          # Check if branch exists, create if it doesn't
+          if git ls-remote --heads origin $BRANCH_NAME | grep -q $BRANCH_NAME; then
+            git checkout $BRANCH_NAME
+            git pull origin $BRANCH_NAME
+          else
+            git checkout -b $BRANCH_NAME
+          fi
+          
+          # Create builds directory if it doesn't exist
+          mkdir -p builds
+          
+          # Move zip file to builds directory
+          mv ${{ env.ZIP_NAME }} builds/
+          
+          # Create or update latest.txt with the newest zip name
+          echo "${{ env.ZIP_NAME }}" > builds/latest.txt
+          
+          # Add and commit changes
+          git add builds/
+          git commit -m "Add Minecraft server build: ${{ env.ZIP_NAME }} [skip ci]"
+          
+          # Push to repository
+          git push origin $BRANCH_NAME
+      
+      - name: Update main branch with symlink (optional)
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        run: |
+          git checkout main || git checkout master
+          
+          # Create or update latest-server.zip symlink/info file
+          echo "Latest server build: ${{ env.ZIP_NAME }}" > latest-server.txt
+          echo "Download from builds/${{ env.ZIP_NAME }}" >> latest-server.txt
+          
+          git add latest-server.txt
+          git commit -m "Update latest server build reference [skip ci]" || echo "No changes to commit"
+          git push origin main || git push origin master
